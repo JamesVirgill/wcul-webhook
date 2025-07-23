@@ -26,7 +26,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .from('kiosks')
       .upsert(
         [{ id, location, status, timestamp: processed_at_iso8601 }],
-        { onConflict: 'id' }
+        { onConflict: 'location' }
       );
 
     if (error) {
