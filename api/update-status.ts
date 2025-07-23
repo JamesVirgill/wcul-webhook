@@ -1,44 +1,31 @@
-import { VercelRequest, VercelResponse } from '@vercel/node';
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js'
 
+// Initialize Supabase client
 const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-);
+  'https://uhokqclbxoevlxrzeinf.supabase.co',
+  process.env.SUPABASE_KEY!
+)
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Only POST allowed' });
+    return res.status(405).json({ error: 'Method not allowed' })
   }
 
-  try {
-    const body = req.body;
+  const { mail_subject, status } = req.body
 
-    const machineName = body.mail_subject;
-    const status = body.status;
+  // Extract location name before colon
+  const [locationRaw] = mail_subject.split(':')
+  const location = locationRaw.trim()
 
-    if (!machineName || !status) {
-      return res.status(400).json({ error: 'Missing machine name or status' });
-    }
+  // Send to Supabase table 'kiosks'
+  const { error } = await supabase
+    .from('kiosks')
+    .upsert({ location, status })
 
-    const is_online = status.toLowerCase() !== 'error';
-
-    const { error } = await supabase
-      .from('kiosk_status')
-      .update({
-        status,
-        is_online,
-        last_updated: new Date().toISOString(),
-      })
-      .eq('location', machineName);
-
-    if (error) {
-      return res.status(500).json({ error: 'Failed to update Supabase', details: error.message });
-    }
-
-    return res.status(200).json({ success: true });
-  } catch (err) {
-    console.error('Webhook error:', err);
-    return res.status(500).json({ error: 'Unexpected server error' });
+  if (error) {
+    console.error('Supabase error:', error)
+    return res.status(500).json({ error: 'Failed to update status' })
   }
+
+  res.status(200).json({ success: true })
 }
