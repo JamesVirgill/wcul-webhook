@@ -2,10 +2,12 @@
   "name": "wcul-webhook",
   "version": "1.0.0",
   "type": "module",
-  "dependencies": {
-    "@supabase/supabase-js": "^2.39.3"
+  "main": "index.js",
+  "scripts": {
+    "start": "vercel dev"
   },
-  "devDependencies": {
-    "@types/node": "^18.17.19"
+  "dependencies": {
+    "@vercel/node": "^1.14.0",
+    "@supabase/supabase-js": "^2.39.3"
   }
 }
