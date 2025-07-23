@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/update-status.ts": {
+      "runtime": "vercel-node@3"
+    }
+  }
+}
