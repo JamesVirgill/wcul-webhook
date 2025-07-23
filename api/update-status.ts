@@ -18,7 +18,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Extract location name from subject (e.g., "Connect Alert - Smitty's: something")
+    // Extract location name from subject
     const locationMatch = raw_subject.split(' - ')[1]?.split(':')[0]?.trim();
     const location = locationMatch || 'Unknown Location';
 
@@ -26,17 +26,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .from('kiosks')
       .upsert(
         [{ id, location, status, timestamp: processed_at_iso8601 }],
-        { onConflict: 'id' } // conflict on ID to update if exists
+        { onConflict: 'id' }
       );
 
     if (error) {
-      console.error('Supabase insert error:', error);
-      return res.status(500).json({ error: 'Failed to update status' });
+      console.error('Supabase upsert error:', error);
+      return res.status(500).json({ error: error.message || 'Failed to update status' });
     }
 
     return res.status(200).json({ success: true });
-  } catch (err) {
-    console.error('Unexpected server error:', err);
-    return res.status(500).json({ error: 'Server error' });
+  } catch (err: any) {
+    console.error('Unexpected error:', err);
+    return res.status(500).json({ error: err.message || 'Server error' });
   }
 }
