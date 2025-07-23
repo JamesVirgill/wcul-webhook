@@ -1,50 +1,33 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize Supabase client
-const supabaseUrl = 'https://uhokqclbxoevlxrzeinf.supabase.co';
-const supabaseKey = process.env.SUPABASE_KEY;
-const supabase = createClient(supabaseUrl, supabaseKey || '');
+const supabase = createClient(
+  'https://uhokqclbxoevlxrzeinf.supabase.co',
+  process.env.SUPABASE_KEY || ''
+);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Only POST allowed' });
+    return res.status(405).json({ error: 'Only POST requests allowed' });
   }
 
   try {
-    const { raw_subject, status, id, processed_at_iso8601 } = req.body;
+    const { id, status, raw_subject, processed_at_iso8601 } = req.body;
 
     if (!raw_subject || !status || !id || !processed_at_iso8601) {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Define possible locations and matching strings
-    const locationMap: Record<string, string> = {
-      "Smitty's": "Smitty's Sandyport",
-      'Rubis': 'Rubis East St and Soldier Rd',
-      'Quality Home Center': 'Quality Home Center Prince Charles',
-      'QHC Carmichael': 'Quality Home Center Carmichael'
-    };
-
-    // Find location from subject
-    const matchedKey = Object.keys(locationMap).find(key =>
-      raw_subject.includes(key)
-    );
-
-    if (!matchedKey) {
-      return res.status(400).json({ error: 'Unable to determine location from subject' });
-    }
-
-    const location = locationMap[matchedKey];
+    // Extract location name from subject (e.g., "Connect Alert - Smitty's: something")
+    const locationMatch = raw_subject.split(' - ')[1]?.split(':')[0]?.trim();
+    const location = locationMatch || 'Unknown Location';
 
     const { error } = await supabase
       .from('kiosks')
-      .upsert({
-        id,
-        location,
-        status,
-        timestamp: processed_at_iso8601
-      }, { onConflict: ['location'] });
+      .upsert(
+        [{ id, location, status, timestamp: processed_at_iso8601 }],
+        { onConflict: 'id' } // conflict on ID to update if exists
+      );
 
     if (error) {
       console.error('Supabase insert error:', error);
@@ -53,8 +36,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     return res.status(200).json({ success: true });
   } catch (err) {
-    console.error('Webhook error:', err);
-    return res.status(500).json({ error: 'Unexpected server error' });
+    console.error('Unexpected server error:', err);
+    return res.status(500).json({ error: 'Server error' });
   }
 }
-
