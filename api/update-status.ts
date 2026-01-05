@@ -22,22 +22,15 @@ function normalizeLocation(loc: string): string {
 }
 
 /**
- * Your Mailparser subjects look like:
- * "Connect Alert - QHC Carmichael : EXCHANGE - transaction"
- *
- * We extract the part between "Connect Alert - " and " :"
+ * "Connect Alert - Smitty's : EXCHANGE - transaction"
+ * We extract <LOCATION> between "Connect Alert - " and " :"
  */
 function extractLocationFromSubject(subject: string): string {
   const raw = subject || '';
 
-  // Primary pattern for your current subject format
-  // "Connect Alert - <LOCATION> : ..."
   const match = raw.match(/connect alert\s*-\s*(.*?)\s*:/i);
-  if (match?.[1]) {
-    return normalizeLocation(match[1]);
-  }
+  if (match?.[1]) return normalizeLocation(match[1]);
 
-  // Fallback: try splitting on " - " then " : "
   const afterDash = raw.split(' - ')[1];
   if (afterDash) {
     const beforeColon = afterDash.split(':')[0]?.trim();
@@ -48,27 +41,33 @@ function extractLocationFromSubject(subject: string): string {
 }
 
 /**
- * Decide what status gets written to Supabase.
- *
- * Frontend rule:
- *   status === "error" => red
- *   anything else      => green
- *
- * So we force:
- * - "cleared" or "transaction" => "ok" (green)
+ * Force:
+ * - "cleared" or "transaction" => "ok"
  * - otherwise keep incoming status (e.g. "error")
  */
 function classifyStatus(rawSubject: string, incomingStatus: string): string {
   const subject = (rawSubject || '').toLowerCase();
   const status = (incomingStatus || '').toLowerCase();
 
-  // If either field indicates cleared/transaction, mark as ok (green)
   if (subject.includes('cleared') || subject.includes('transaction')) return 'ok';
   if (status.includes('cleared') || status.includes('transaction')) return 'ok';
 
-  // Otherwise, pass through what Mailparser sent (e.g. "error")
-  // (If Mailparser sends something unexpected, this will still show green unless it's literally "error")
   return incomingStatus || 'ok';
+}
+
+/**
+ * Convert timestamps from Mailparser.
+ * - If it's already ISO, Date() will parse it.
+ * - If it's "01/05/2026 - 10:41 am", Date parsing may vary by runtime;
+ *   if parsing fails, we fall back to "now" so the upsert still happens.
+ */
+function toIsoTimestamp(value: any): string {
+  if (!value) return new Date().toISOString();
+
+  const d = new Date(value);
+  if (!isNaN(d.getTime())) return d.toISOString();
+
+  return new Date().toISOString();
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -77,31 +76,60 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const { id, status, raw_subject, processed_at_iso8601 } = req.body;
+    // Accept common Mailparser field names
+    const raw_subject =
+      req.body?.raw_subject ??
+      req.body?.rawSubject ??
+      req.body?.subject ??
+      '';
 
-    if (!raw_subject || !id || !processed_at_iso8601) {
+    const incomingStatus =
+      req.body?.status ??
+      req.body?.full_status ??
+      req.body?.fullStatus ??
+      '';
+
+    const id =
+      req.body?.id ??
+      req.body?.message_id ??
+      req.body?.messageId ??
+      req.body?.['Message ID'] ??
+      '';
+
+    const processedRaw =
+      req.body?.processed_at_iso8601 ??
+      req.body?.processed_at ??
+      req.body?.processedAt ??
+      req.body?.['Processed at'] ??
+      '';
+
+    if (!raw_subject) {
       return res.status(400).json({
-        error: 'Missing required fields',
-        required: ['id', 'raw_subject', 'processed_at_iso8601']
+        error: 'Missing required field: raw_subject (or subject)'
       });
     }
 
-    // 1) Determine final status (force ok on transaction/cleared)
-    const finalStatus = classifyStatus(raw_subject, status);
+    // If Mailparser doesn’t provide id, still proceed
+    const safeId = String(id || `${raw_subject}-${Date.now()}`);
 
-    // 2) Extract location from subject (matches your frontend keys)
+    const timestamp = toIsoTimestamp(processedRaw);
+
+    // 1) Determine final status
+    const finalStatus = classifyStatus(raw_subject, incomingStatus);
+
+    // 2) Extract location
     const location = extractLocationFromSubject(raw_subject);
 
-    // 3) Upsert to Supabase (one row per location)
+    // 3) Save to Supabase
     const { error } = await supabase
       .from('kiosks')
       .upsert(
         [
           {
-            id,
+            id: safeId,
             location,
-            status: finalStatus,
-            timestamp: processed_at_iso8601
+            status: finalStatus,     // <-- transaction becomes "ok" here
+            timestamp
           }
         ],
         { onConflict: 'location' }
@@ -116,7 +144,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       success: true,
       location,
       status: finalStatus,
-      timestamp: processed_at_iso8601
+      timestamp
     });
   } catch (err: any) {
     console.error('Unexpected error:', err);
