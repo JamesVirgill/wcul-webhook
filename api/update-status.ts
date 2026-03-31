@@ -22,8 +22,10 @@ function normalizeLocation(loc: string): string {
 }
 
 /**
+ * Extract <LOCATION> between "Connect Alert - " and ":"
+ * Works for both:
  * "Connect Alert - Smitty's : EXCHANGE - transaction"
- * We extract <LOCATION> between "Connect Alert - " and " :"
+ * "[SOLVED] Connect Alert - QHC Carmichael: jxfs.extendedcode..."
  */
 function extractLocationFromSubject(subject: string): string {
   const raw = subject || '';
@@ -41,25 +43,50 @@ function extractLocationFromSubject(subject: string): string {
 }
 
 /**
- * Force:
- * - "cleared" or "transaction" => "ok"
- * - otherwise keep incoming status (e.g. "error")
+ * Status priority:
+ * 1. Any solved language always wins => ok
+ * 2. Otherwise, any error language => error
+ * 3. Fallback => error
  */
-function classifyStatus(rawSubject: string, incomingStatus: string): string {
+function classifyStatus(rawSubject: string, incomingStatus: string, bodyText: string = ''): string {
   const subject = (rawSubject || '').toLowerCase();
   const status = (incomingStatus || '').toLowerCase();
+  const body = (bodyText || '').toLowerCase();
 
-  if (subject.includes('cleared') || subject.includes('transaction')) return 'ok';
-  if (status.includes('cleared') || status.includes('transaction')) return 'ok';
+  // SOLVED always overrides ERROR
+  if (
+    subject.includes('[solved]') ||
+    subject.includes('cleared') ||
+    body.includes('is solved') ||
+    body.includes(' solved ') ||
+    status.includes('solved') ||
+    status.includes('cleared')
+  ) {
+    return 'ok';
+  }
 
-  return incomingStatus || 'ok';
+  // Otherwise, error signals mean red
+  if (
+    subject.includes('error') ||
+    body.includes('error') ||
+    status.includes('error')
+  ) {
+    return 'error';
+  }
+
+  // Keep your older "transaction" behavior if still needed
+  if (
+    subject.includes('transaction') ||
+    status.includes('transaction')
+  ) {
+    return 'ok';
+  }
+
+  return 'error';
 }
 
 /**
  * Convert timestamps from Mailparser.
- * - If it's already ISO, Date() will parse it.
- * - If it's "01/05/2026 - 10:41 am", Date parsing may vary by runtime;
- *   if parsing fails, we fall back to "now" so the upsert still happens.
  */
 function toIsoTimestamp(value: any): string {
   if (!value) return new Date().toISOString();
@@ -76,7 +103,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    // Accept common Mailparser field names
     const raw_subject =
       req.body?.raw_subject ??
       req.body?.rawSubject ??
@@ -87,6 +113,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       req.body?.status ??
       req.body?.full_status ??
       req.body?.fullStatus ??
+      '';
+
+    const bodyText =
+      req.body?.body ??
+      req.body?.text_plain ??
+      req.body?.text ??
+      req.body?.plain_text ??
       '';
 
     const id =
@@ -109,18 +142,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // If Mailparser doesn’t provide id, still proceed
     const safeId = String(id || `${raw_subject}-${Date.now()}`);
-
     const timestamp = toIsoTimestamp(processedRaw);
 
-    // 1) Determine final status
-    const finalStatus = classifyStatus(raw_subject, incomingStatus);
-
-    // 2) Extract location
+    const finalStatus = classifyStatus(raw_subject, incomingStatus, bodyText);
     const location = extractLocationFromSubject(raw_subject);
 
-    // 3) Save to Supabase
     const { error } = await supabase
       .from('kiosks')
       .upsert(
@@ -128,7 +155,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           {
             id: safeId,
             location,
-            status: finalStatus,     // <-- transaction becomes "ok" here
+            status: finalStatus,
             timestamp
           }
         ],
