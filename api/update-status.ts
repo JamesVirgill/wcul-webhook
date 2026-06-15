@@ -1,101 +1,14 @@
 import { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  'https://uhokqclbxoevlxrzeinf.supabase.co',
-  process.env.SUPABASE_KEY || ''
-);
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-/**
- * Normalize incoming location strings so they match the exact keys
- * used by your frontend's locationMap.
- */
-function normalizeLocation(loc: string): string {
-  const s = (loc || '').trim();
-
-  if (/smitty/i.test(s)) return "Smitty's";
-  if (/qhc\s*carmichael/i.test(s) || /carmichael/i.test(s)) return 'QHC Carmichael';
-  if (/quality home center/i.test(s) || /prince charles/i.test(s)) return 'Quality Home Center';
-  if (/rubis/i.test(s)) return 'Rubis';
-
-  return s || 'Unknown Location';
+if (!supabaseUrl || !supabaseServiceKey) {
+  throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
 }
 
-/**
- * Extract <LOCATION> between "Connect Alert - " and ":"
- * Works for both:
- * "Connect Alert - Smitty's : EXCHANGE - transaction"
- * "[SOLVED] Connect Alert - QHC Carmichael: jxfs.extendedcode..."
- */
-function extractLocationFromSubject(subject: string): string {
-  const raw = subject || '';
-
-  const match = raw.match(/connect alert\s*-\s*(.*?)\s*:/i);
-  if (match?.[1]) return normalizeLocation(match[1]);
-
-  const afterDash = raw.split(' - ')[1];
-  if (afterDash) {
-    const beforeColon = afterDash.split(':')[0]?.trim();
-    if (beforeColon) return normalizeLocation(beforeColon);
-  }
-
-  return 'Unknown Location';
-}
-
-/**
- * Status priority:
- * 1. Any solved language always wins => ok
- * 2. Otherwise, any error language => error
- * 3. Fallback => error
- */
-function classifyStatus(rawSubject: string, incomingStatus: string, bodyText: string = ''): string {
-  const subject = (rawSubject || '').toLowerCase();
-  const status = (incomingStatus || '').toLowerCase();
-  const body = (bodyText || '').toLowerCase();
-
-  // SOLVED always overrides ERROR
-  if (
-    subject.includes('[solved]') ||
-    subject.includes('cleared') ||
-    body.includes('is solved') ||
-    body.includes(' solved ') ||
-    status.includes('solved') ||
-    status.includes('cleared')
-  ) {
-    return 'ok';
-  }
-
-  // Otherwise, error signals mean red
-  if (
-    subject.includes('error') ||
-    body.includes('error') ||
-    status.includes('error')
-  ) {
-    return 'error';
-  }
-
-  // Keep your older "transaction" behavior if still needed
-  if (
-    subject.includes('transaction') ||
-    status.includes('transaction')
-  ) {
-    return 'ok';
-  }
-
-  return 'error';
-}
-
-/**
- * Convert timestamps from Mailparser.
- */
-function toIsoTimestamp(value: any): string {
-  if (!value) return new Date().toISOString();
-
-  const d = new Date(value);
-  if (!isNaN(d.getTime())) return d.toISOString();
-
-  return new Date().toISOString();
-}
+const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
@@ -103,60 +16,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const raw_subject =
-      req.body?.raw_subject ??
-      req.body?.rawSubject ??
-      req.body?.subject ??
-      '';
+    const { id, status, raw_subject, processed_at_iso8601 } = req.body;
 
-    const incomingStatus =
-      req.body?.status ??
-      req.body?.full_status ??
-      req.body?.fullStatus ??
-      '';
-
-    const bodyText =
-      req.body?.body ??
-      req.body?.text_plain ??
-      req.body?.text ??
-      req.body?.plain_text ??
-      '';
-
-    const id =
-      req.body?.id ??
-      req.body?.message_id ??
-      req.body?.messageId ??
-      req.body?.['Message ID'] ??
-      '';
-
-    const processedRaw =
-      req.body?.processed_at_iso8601 ??
-      req.body?.processed_at ??
-      req.body?.processedAt ??
-      req.body?.['Processed at'] ??
-      '';
-
-    if (!raw_subject) {
-      return res.status(400).json({
-        error: 'Missing required field: raw_subject (or subject)'
-      });
+    if (!raw_subject || !id || !processed_at_iso8601) {
+      return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    const safeId = String(id || `${raw_subject}-${Date.now()}`);
-    const timestamp = toIsoTimestamp(processedRaw);
+    let finalStatus = status || 'error';
 
-    const finalStatus = classifyStatus(raw_subject, incomingStatus, bodyText);
-    const location = extractLocationFromSubject(raw_subject);
+    if (raw_subject.toLowerCase().includes('cleared')) {
+      finalStatus = 'ok';
+    }
+
+    let location = 'Unknown Location';
+
+    if (raw_subject.toLowerCase().includes('cleared')) {
+      location = raw_subject.replace(/cleared/i, '').trim();
+    } else {
+      const locationMatch = raw_subject.split(' - ')[1]?.split(':')[0]?.trim();
+      location = locationMatch || 'Unknown Location';
+    }
 
     const { error } = await supabase
       .from('kiosks')
       .upsert(
         [
           {
-            id: safeId,
+            id,
             location,
             status: finalStatus,
-            timestamp
+            timestamp: processed_at_iso8601
           }
         ],
         { onConflict: 'location' }
@@ -164,17 +53,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (error) {
       console.error('Supabase upsert error:', error);
-      return res.status(500).json({ error: error.message || 'Failed to update status' });
+      return res.status(500).json({
+        error: error.message || 'Failed to update status'
+      });
     }
 
     return res.status(200).json({
       success: true,
       location,
-      status: finalStatus,
-      timestamp
+      status: finalStatus
     });
   } catch (err: any) {
     console.error('Unexpected error:', err);
-    return res.status(500).json({ error: err.message || 'Server error' });
+    return res.status(500).json({
+      error: err.message || 'Server error'
+    });
   }
 }
