@@ -10,34 +10,74 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(
+  req: VercelRequest,
+  res: VercelResponse
+) {
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Only POST requests allowed' });
+    return res.status(405).json({
+      error: 'Only POST requests allowed'
+    });
   }
 
   try {
-    const { id, status, raw_subject, processed_at_iso8601 } = req.body;
+    const {
+      id,
+      status,
+      raw_subject,
+      processed_at_iso8601
+    } = req.body;
 
     if (!raw_subject || !id || !processed_at_iso8601) {
-      return res.status(400).json({ error: 'Missing required fields' });
+      return res.status(400).json({
+        error: 'Missing required fields'
+      });
     }
+
+    const subject = String(raw_subject).trim();
+    const subjectLower = subject.toLowerCase();
+
+    /*
+      Solved emails look like:
+
+      [SOLVED] Connect Alert - QHC Carmichael:
+      jxfs.extendedcode.CAM.111 - error
+    */
+
+    const isSolved =
+      subjectLower.includes('[solved]') ||
+      subjectLower.includes('solved') ||
+      subjectLower.includes('cleared') ||
+      subjectLower.includes('resolved');
 
     let finalStatus = status || 'error';
 
-    if (raw_subject.toLowerCase().includes('cleared')) {
+    if (isSolved) {
       finalStatus = 'ok';
     }
 
-    let location = 'Unknown Location';
+    /*
+      This finds the location between:
 
-    if (raw_subject.toLowerCase().includes('cleared')) {
-      location = raw_subject.replace(/cleared/i, '').trim();
-    } else {
-      const locationMatch = raw_subject.split(' - ')[1]?.split(':')[0]?.trim();
-      location = locationMatch || 'Unknown Location';
-    }
+      "Connect Alert - " and ":"
 
-    const { error } = await supabase
+      Example result:
+      QHC Carmichael
+    */
+
+    const locationMatch = subject.match(
+      /connect alert\s*-\s*([^:]+)\s*:/i
+    );
+
+    let location = locationMatch?.[1]?.trim() || 'Unknown Location';
+
+    console.log('Raw subject:', subject);
+    console.log('Location:', location);
+    console.log('Incoming status:', status);
+    console.log('Solved email:', isSolved);
+    console.log('Final status:', finalStatus);
+
+    const { data, error } = await supabase
       .from('kiosks')
       .upsert(
         [
@@ -48,11 +88,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             timestamp: processed_at_iso8601
           }
         ],
-        { onConflict: 'location' }
-      );
+        {
+          onConflict: 'location'
+        }
+      )
+      .select();
 
     if (error) {
       console.error('Supabase upsert error:', error);
+
       return res.status(500).json({
         error: error.message || 'Failed to update status'
       });
@@ -61,10 +105,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       success: true,
       location,
-      status: finalStatus
+      status: finalStatus,
+      solved: isSolved,
+      data
     });
   } catch (err: any) {
     console.error('Unexpected error:', err);
+
     return res.status(500).json({
       error: err.message || 'Server error'
     });
