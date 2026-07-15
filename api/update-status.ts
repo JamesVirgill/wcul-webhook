@@ -36,17 +36,22 @@ export default async function handler(
     const subject = String(raw_subject).trim();
     const subjectLower = subject.toLowerCase();
 
-    // Solved emails turn the kiosk green.
-    const isSolved =
-      subjectLower.includes('[solved]') ||
-      subjectLower.includes('cleared') ||
-      subjectLower.includes('resolved');
+    // Check NOT SOLVED first because it also contains the word "solved".
+    const isNotSolved =
+      subjectLower.includes('[not solved]') ||
+      subjectLower.includes('not solved');
 
-    // Solved = green. Everything else = red.
+    const isSolved =
+      !isNotSolved &&
+      (
+        subjectLower.includes('[solved]') ||
+        subjectLower.includes('cleared') ||
+        subjectLower.includes('resolved')
+      );
+
+    // SOLVED = green. NOT SOLVED and all other alerts = red.
     const finalStatus = isSolved ? 'ok' : 'error';
 
-    // Finds the location after "Connect Alert -"
-    // and before the colon.
     const locationMatch = subject.match(
       /connect alert\s*-\s*([^:]+)\s*:/i
     );
@@ -56,6 +61,7 @@ export default async function handler(
 
     console.log('Raw subject:', subject);
     console.log('Location:', location);
+    console.log('Not solved email:', isNotSolved);
     console.log('Solved email:', isSolved);
     console.log('Final status:', finalStatus);
 
@@ -89,6 +95,7 @@ export default async function handler(
       location,
       status: finalStatus,
       solved: isSolved,
+      notSolved: isNotSolved,
       data
     });
   } catch (err: any) {
