@@ -23,7 +23,6 @@ export default async function handler(
   try {
     const {
       id,
-      status,
       raw_subject,
       processed_at_iso8601
     } = req.body;
@@ -37,43 +36,26 @@ export default async function handler(
     const subject = String(raw_subject).trim();
     const subjectLower = subject.toLowerCase();
 
-    /*
-      Solved emails look like:
-
-      [SOLVED] Connect Alert - QHC Carmichael:
-      jxfs.extendedcode.CAM.111 - error
-    */
-
+    // Solved emails turn the kiosk green.
     const isSolved =
       subjectLower.includes('[solved]') ||
-      subjectLower.includes('solved') ||
       subjectLower.includes('cleared') ||
       subjectLower.includes('resolved');
 
-    let finalStatus = status || 'error';
+    // Solved = green. Everything else = red.
+    const finalStatus = isSolved ? 'ok' : 'error';
 
-    if (isSolved) {
-      finalStatus = 'ok';
-    }
-
-    /*
-      This finds the location between:
-
-      "Connect Alert - " and ":"
-
-      Example result:
-      QHC Carmichael
-    */
-
+    // Finds the location after "Connect Alert -"
+    // and before the colon.
     const locationMatch = subject.match(
       /connect alert\s*-\s*([^:]+)\s*:/i
     );
 
-    let location = locationMatch?.[1]?.trim() || 'Unknown Location';
+    const location =
+      locationMatch?.[1]?.trim() || 'Unknown Location';
 
     console.log('Raw subject:', subject);
     console.log('Location:', location);
-    console.log('Incoming status:', status);
     console.log('Solved email:', isSolved);
     console.log('Final status:', finalStatus);
 
